@@ -1,8 +1,16 @@
 make-clang
 ==========
 
-A Python script that makes it easy to create clang compilation databases from
-Make-based projects.
+A Python script that makes it easy to create [clang compilation
+databases](http://clang.llvm.org/docs/JSONCompilationDatabase.html) from
+Make-based projects. It was inspired by the
+[YouCompleteMe](https://github.com/Valloric/YouCompleteMe) code completion
+plugin for vim, which is fantastic but requires a compilation database to
+function correctly on the projects I spend most of my time working on.
+Unfortunately I couldn't find a tool that worked to generate the database for a
+Makefile-based project on OS X, so I wrote my own. (For Linux, there's
+[Bear](https://github.com/rizsotto/Bear), which I attempted to port to OS X but
+couldn't make work reliably in the time I had available.)
 
 Still much to do. The current implementation relies on the atomicity of small
 calls to write() to function in a parallel building context, which could

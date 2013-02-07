@@ -11,44 +11,65 @@ def filterArguments(arguments):
   filteredArguments = [arguments[0]]
   
   # Append the remaining arguments if they don't have undesirable side effects.
+  skipNext = False
   for arg in arguments[1:]:
-    if arg == '-MD' or (arg.startswith('-W') and ('-MD,' in arg)):
+    if skipNext:
+      skipNext = False
+    elif arg == '-MD' or (arg.startswith('-W') and ('-MD,' in arg)):
       # Skip because we don't want to generate dependency files.
       pass
+    elif arg == '-MF':
+      # Skip this argument and the following one because we don't want
+      # to generate dependency files.
+      skipNext = True
     else:
       filteredArguments.append(arg)
   
   return filteredArguments
 
-def writeLog(logFilename, logEntry):
+def writeLog(logFilename, logEntries):
   with open(logFilename, "a") as f:
-    dump = json.dumps(logEntry)
-    dump += '\n'
-    f.write(dump)
+    for entry in logEntries:
+      dump = json.dumps(entry)
+      dump += '\n'
+      f.write(dump)
 
-def createLogEntry(arguments):
+def createLogEntries(arguments):
   # Determine the working directory.
   cwd = os.getcwd()
   
   # Determine the command.
   command = string.join(arguments, ' ')
 
-  # Determine the filename.
-  filenamePat = re.compile('\.(c|cc|cpp|C|CC|CPP|h|hh|hpp|H|HH|HPP|o)$')
-  filename = None
-  for arg in arguments[1:]:
-    if filenamePat.search(arg) is not None:
-      filename = arg
+  # Create regular expression patterns.
+  extensionPat = re.compile('\.(c|cc|cpp|C)$')
+  headerMap = {
+                'c': ['.h'],
+                'cc': ['.h', '.hh'],
+                'cpp': ['.h', '.hpp'],
+                'C': ['.h', '.H']
+              }
   
-  if filename is not None:
-    return {
+  # Determine the filenames.
+  filenames = []
+  for arg in arguments[1:]:
+    extensionMatch = extensionPat.search(arg)
+    if extensionMatch is not None:
+      filenames.append(arg)
+      extension = extensionMatch.group(1)
+      if extension in headerMap:
+        filenames.extend([re.sub(extensionPat, headerExt, arg)
+                         for headerExt in headerMap[extension]])
+  
+  if filenames:
+    return [{
              'directory': cwd,
              'command': command,
              'file': filename
-           }
+            } for filename in filenames]
   else:
     #print >>sys.stderr, "create-cdb: Skipping log entry for command [", command, "] because the filename can't be determined."
-    return None
+    return filenames
 
 def doMerge(logFilename, dbFilename):
   # Create hash of the log file for quick access.
@@ -80,9 +101,9 @@ def doMerge(logFilename, dbFilename):
 
 def doLog(logFilename, arguments):
   try:
-    logEntry = createLogEntry(arguments)
-    if logEntry is not None:
-      writeLog(logFilename, logEntry)
+    logEntries = createLogEntries(arguments)
+    if logEntries:
+      writeLog(logFilename, logEntries)
 
     import subprocess
     #print 'Will run',sys.argv[2:]

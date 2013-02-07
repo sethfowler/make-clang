@@ -10,10 +10,10 @@ certainly be improved. More urgently, it requires too much hand-holding to
 operate. Using it should be as simple as calling `make-clang` instead of `make`.
 Will fix this up over the next week or so as time permits.
 
-If you're interested in trying this at this stage, this should give you an idea
-for how to use it:
+If you're interested in trying `make-clang` at this stage, this should give you
+an idea for how to use it:
 
-    make CC='make-clang `pwd`/cdb.log /usr/bin/clang' CXX='make-clang `pwd`/cdb.log /usr/bin/clang++'
+    make CC="make-clang `pwd`/cdb.log /usr/bin/clang" CXX="make-clang `pwd`/cdb.log /usr/bin/clang++"
     make-clang --merge cdb.log compile_commands.json
     rm cdb.log
 

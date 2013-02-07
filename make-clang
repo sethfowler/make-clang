@@ -1,0 +1,112 @@
+import os
+import sys
+import json
+import re
+import string
+
+def filterArguments(arguments):
+  # The command itself is always included.
+  filteredArguments = [arguments[0]]
+  
+  # Append the remaining arguments if they don't have undesirable side effects.
+  for arg in arguments[1:]:
+    if arg == '-MD' or (arg.startswith('-W') and ('-MD,' in arg)):
+      # Skip because we don't want to generate dependency files.
+      pass
+    else:
+      filteredArguments.append(arg)
+  
+  return filteredArguments
+
+def writeLog(logFilename, logEntry):
+  with open(logFilename, "a") as f:
+    dump = json.dumps(logEntry)
+    dump += '\n'
+    f.write(dump)
+
+def createLogEntry(arguments):
+  # Determine the working directory.
+  cwd = os.getcwd()
+  
+  # Determine the command.
+  command = string.join(arguments, ' ')
+
+  # Determine the filename.
+  filenamePat = re.compile('\.(c|cc|cpp|C|CC|CPP|h|hh|hpp|H|HH|HPP|o)$')
+  filename = None
+  for arg in arguments[1:]:
+    if filenamePat.search(arg) is not None:
+      filename = arg
+  
+  if filename is not None:
+    return {
+             'directory': cwd,
+             'command': command,
+             'file': filename
+           }
+  else:
+    #print >>sys.stderr, "create-cdb: Skipping log entry for command [", command, "] because the filename can't be determined."
+    return None
+
+def doMerge(logFilename, dbFilename):
+  # Create hash of the log file for quick access.
+  log = {}
+  with open(logFilename, "r") as f:
+    for line in f:
+      try:
+        logEntry = json.loads(line)
+        log[logEntry['file']] = logEntry
+      except:
+        print "Skipping line:", line
+  
+  # Load the existing database.
+  try:
+    with open(dbFilename, "r") as f:
+        db = json.load(f)
+  except:
+    db = []
+  
+  # Remove all entries obsoleted by the log.
+  db = [dbEntry for dbEntry in db if dbEntry['file'] not in log]
+  
+  # Add the log entries to the db.
+  db.extend(log.values())
+  
+  # Write the updated db.
+  with open(dbFilename, "w") as f:
+    json.dump(db, f)
+
+def doLog(logFilename, arguments):
+  try:
+    logEntry = createLogEntry(arguments)
+    if logEntry is not None:
+      writeLog(logFilename, logEntry)
+
+    import subprocess
+    #print 'Will run',sys.argv[2:]
+    proc = subprocess.Popen(arguments)
+    ret = proc.wait()
+  except:
+    import traceback
+    exc_type, exc_value, exc_traceback = sys.exc_info()
+    traceback.print_exception(exc_type, exc_value, exc_traceback,
+                              limit=2, file=sys.stderr)
+    raw_input("Press a key")
+    
+  if ret is None:
+    sys.exit(1)
+  sys.exit(ret)
+  
+# Parse commandline arguments
+if sys.argv[1] == '--merge':
+  logFilename = sys.argv[2]
+  dbFilename = sys.argv[3]
+  doMerge(logFilename, dbFilename)
+elif sys.argv[1] == '--log':
+  logFilename = sys.argv[2]
+  arguments = filterArguments(sys.argv[3:])
+  doLog(logFilename, arguments)
+else:
+  logFilename = sys.argv[1]
+  arguments = filterArguments(sys.argv[2:])
+  doLog(logFilename, arguments)

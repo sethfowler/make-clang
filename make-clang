@@ -100,8 +100,10 @@ def doMerge(logFilename, dbFilename):
     json.dump(db, f)
 
 def doLog(logFilename, arguments):
+  filteredArguments = filterArguments(arguments)
+
   try:
-    logEntries = createLogEntries(arguments)
+    logEntries = createLogEntries(filteredArguments)
     if logEntries:
       writeLog(logFilename, logEntries)
 
@@ -127,9 +129,9 @@ if sys.argv[1] == '--merge':
   doMerge(logFilename, dbFilename)
 elif sys.argv[1] == '--log':
   logFilename = sys.argv[2]
-  arguments = filterArguments(sys.argv[3:])
+  arguments = sys.argv[3:]
   doLog(logFilename, arguments)
 else:
   logFilename = sys.argv[1]
-  arguments = filterArguments(sys.argv[2:])
+  arguments = sys.argv[2:]
   doLog(logFilename, arguments)

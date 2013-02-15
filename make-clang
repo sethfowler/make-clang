@@ -1,10 +1,35 @@
 #!/usr/bin/env python
 
 import os
+import os.path
+import shutil
 import sys
 import json
 import re
 import string
+import tempfile
+import subprocess
+import time
+
+# Global constants.
+DATABASE_FILE = 'compile_commands.json'
+VALID_EXT_PAT = re.compile('\.(c|cc|cpp|C)$')
+HEADER_EXTS = {
+                'c': ['.h'],
+                'cc': ['.h', '.hh'],
+                'cpp': ['.h', '.hpp'],
+                'C': ['.h', '.H']
+              }
+
+def which(executable):
+    pathDirs = os.environ.get("PATH").split(os.pathsep)
+    for pathDir in pathDirs:
+      execFullPath = os.path.join(pathDir, executable)
+      if os.access(execFullPath, os.F_OK | os.R_OK | os.X_OK):
+        return execFullPath
+
+def pathToFilename(path):
+  return path.replace(os.path.sep, '_')
 
 def filterArguments(arguments):
   # The command itself is always included.
@@ -27,65 +52,80 @@ def filterArguments(arguments):
   
   return filteredArguments
 
-def writeLog(logFilename, logEntries):
-  with open(logFilename, "a") as f:
-    for entry in logEntries:
-      dump = json.dumps(entry)
-      dump += '\n'
-      f.write(dump)
+def writeLog(logDir, logEntries):
+  for entry in logEntries:
+    timestamp = '__' + str(time.time())
+    logFilename = os.path.join(logDir, pathToFilename(entry['file']) + timestamp)
+    with open(logFilename, "a") as f:
+      json.dump(entry, f)
+
+def checkForHeaders(filename, extension):
+  if extension in HEADER_EXTS:
+    possibleHeaders = [re.sub(VALID_EXT_PAT, headerExt, filename)
+                       for headerExt in HEADER_EXTS[extension]]
+    return [header for header in possibleHeaders
+                   if os.access(header, os.F_OK)]
+  else:
+    return []
 
 def createLogEntries(arguments):
   # Determine the working directory.
   cwd = os.getcwd()
   
-  # Determine the command.
-  command = string.join(arguments, ' ')
-
   # Create regular expression patterns.
-  extensionPat = re.compile('\.(c|cc|cpp|C)$')
-  headerMap = {
-                'c': ['.h'],
-                'cc': ['.h', '.hh'],
-                'cpp': ['.h', '.hpp'],
-                'C': ['.h', '.H']
-              }
-  
-  # Determine the filenames.
-  filenames = []
-  for arg in arguments[1:]:
-    extensionMatch = extensionPat.search(arg)
-    if extensionMatch is not None:
-      filenames.append(arg)
-      extension = extensionMatch.group(1)
-      if extension in headerMap:
-        filenames.extend([re.sub(extensionPat, headerExt, arg)
-                         for headerExt in headerMap[extension]])
-  
-  if filenames:
-    return [{
-             'directory': cwd,
-             'command': command,
-             'file': filename
-            } for filename in filenames]
-  else:
-    #print >>sys.stderr, "create-cdb: Skipping log entry for command [", command, "] because the filename can't be determined."
-    return filenames
+  # Create the entries. Since headers don't get compiled directly, but it's
+  # nice to have them in the database, we try to guess their filenames based on
+  # the source files.
+  entries = []
+  for idx, arg in enumerate(arguments):
+    if idx == 0:
+      # Skip the command itself.
+      continue
 
-def doMerge(logFilename, dbFilename):
-  # Create hash of the log file for quick access.
+    extensionMatch = VALID_EXT_PAT.search(arg)
+    if extensionMatch is not None:
+      # Add the primary entry for the file itself.
+      entries.append({
+                       'directory': cwd,
+                       'command': string.join(arguments, ' '),
+                       'file': arg
+                     })
+      extension = extensionMatch.group(1)
+
+      # Check for headers matching this file.
+      headers = checkForHeaders(arg, extension)
+
+      # Create entries for each header.
+      for header in headers:
+        # Replace the original filename with the header filename in this argument.
+        headerArgs = arguments[:idx]
+        headerArgs.append(header)
+        headerArgs.extend(arguments[idx + 1:])
+
+        entries.append({
+                         'directory': cwd,
+                         'command': string.join(headerArgs, ' '),
+                         'file': header
+                       })
+
+  return entries
+
+def doMerge(logDir, dbFilename):
+  # Create a hash from the log files.
   log = {}
-  with open(logFilename, "r") as f:
-    for line in f:
+  for logFile in os.listdir(logDir):
+    with open(os.path.join(logDir, logFile), "r") as f:
+      jsonLogEntry = f.read()
       try:
-        logEntry = json.loads(line)
+        logEntry = json.loads(jsonLogEntry)
         log[logEntry['file']] = logEntry
       except:
-        print "Skipping line:", line
+        print >>sys.stderr, "Unreadable log entry:", jsonLogEntry
   
   # Load the existing database.
   try:
     with open(dbFilename, "r") as f:
-        db = json.load(f)
+      db = json.load(f)
   except:
     db = []
   
@@ -99,39 +139,69 @@ def doMerge(logFilename, dbFilename):
   with open(dbFilename, "w") as f:
     json.dump(db, f)
 
-def doLog(logFilename, arguments):
+def doLog(logDir, arguments):
   filteredArguments = filterArguments(arguments)
 
-  try:
-    logEntries = createLogEntries(filteredArguments)
-    if logEntries:
-      writeLog(logFilename, logEntries)
+  logEntries = createLogEntries(filteredArguments)
+  if logEntries:
+    writeLog(logDir, logEntries)
 
-    import subprocess
-    #print 'Will run',sys.argv[2:]
-    proc = subprocess.Popen(arguments)
-    ret = proc.wait()
-  except:
-    import traceback
-    exc_type, exc_value, exc_traceback = sys.exc_info()
-    traceback.print_exception(exc_type, exc_value, exc_traceback,
-                              limit=2, file=sys.stderr)
-    raw_input("Press a key")
+  proc = subprocess.Popen(arguments)
+  ret = proc.wait()
     
   if ret is None:
     sys.exit(1)
   sys.exit(ret)
+
+def doMake(makeArguments):
+  # Locate relevant executables.
+  make = which('make')
+  makeClang = sys.argv[0]
+  clang = which('clang')
+  clangpp = which('clang++')
+  if not make or not clang or not clangpp:
+    print >>sys.stderr, "Can't find |make|, |clang|, and |clang++| in PATH"
+    sys.exit(1)
+
+  # Create a directory that will hold log files during the build. The directory
+  # name needs to be deterministic since configure will bake it into the
+  # makefiles it generates.
+  ret = None
+  logDir = os.path.join(tempfile.gettempdir(), "make-clang__" + pathToFilename(os.getcwd()))
+  try:
+    if not os.path.exists(logDir):
+      os.makedirs(logDir)
+
+    # Invoke |make| with the provided options, adding CC and CXX variables that
+    # will inject calls to this script to do the logging.
+    arguments = [make,
+                 string.join(["CC=", makeClang, " --log ", logDir, " ", clang, ""], ""),
+                 string.join(["CXX=", makeClang, " --log ", logDir, " ", clangpp, ""], "")]
+    arguments.extend(makeArguments)
+    proc = subprocess.Popen(arguments)
+    ret = proc.wait()
+
+    # Merge the generated logs.
+    doMerge(logDir, DATABASE_FILE)
+  finally:
+    shutil.rmtree(logDir)
+
+  if ret is None:
+    sys.exit(1)
+  sys.exit(ret)
   
-# Parse commandline arguments
-if sys.argv[1] == '--merge':
-  logFilename = sys.argv[2]
-  dbFilename = sys.argv[3]
-  doMerge(logFilename, dbFilename)
-elif sys.argv[1] == '--log':
-  logFilename = sys.argv[2]
+# Dispatch based on commandline arguments.
+if len(sys.argv) > 1 and sys.argv[1] == '--log':
+  logDir = sys.argv[2]
   arguments = sys.argv[3:]
-  doLog(logFilename, arguments)
+  doLog(logDir, arguments)
+elif len(sys.argv) > 1 and sys.argv[1] == '--help':
+  print "This script will call 'make' with the CC and CXX variables modified to"
+  print "record compiler invocations. The results will be used to create or"
+  print "update a clang compilation database stored in '" + DATABASE_FILE + "'"
+  print "in the current directory. Any options provided will be passed to |make|"
+  print "without modification with the exception of '--help', which prints this"
+  print "message, and '--log', which is used internally."
 else:
-  logFilename = sys.argv[1]
-  arguments = sys.argv[2:]
-  doLog(logFilename, arguments)
+  makeArguments = sys.argv[1:]
+  doMake(makeArguments)
